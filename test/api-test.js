@@ -496,7 +496,18 @@ test('API tests', async t => {
         assert.strictEqual(responseSearchTarget.body.messages[0].messageId, '<test2@example.com>');
     });
 
-    await t.test('Create Gmail API OAuth2 service project', async () => {
+    // Check if Gmail API credentials are configured
+    const hasGmailConfig = process.env.GMAIL_API_PROJECT_ID && 
+                          process.env.GMAIL_API_CLIENT_SECRET && 
+                          process.env.GMAIL_API_SERVICE_KEY &&
+                          process.env.GMAIL_API_ACCOUNT_EMAIL_1 &&
+                          process.env.GMAIL_API_ACCOUNT_REFRESH_1;
+
+    await t.test('Create Gmail API OAuth2 service project', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         let gmailServiceData = {
             name: 'Gmail API Pub/Sub',
             provider: 'gmailService',
@@ -513,7 +524,11 @@ test('API tests', async t => {
         assert.ok(oauth2PubsubId);
     });
 
-    await t.test('Create Gmail API OAuth2 client project', async () => {
+    await t.test('Create Gmail API OAuth2 client project', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         let gmailClientData = {
             name: 'Gmail API Client',
             provider: 'gmail',
@@ -531,7 +546,11 @@ test('API tests', async t => {
         assert.ok(oauth2AppId);
     });
 
-    await t.test('Register Gmail account 1', async () => {
+    await t.test('Register Gmail account 1', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         const response = await server
             .post(`/v1/account`)
             .send({
@@ -551,7 +570,11 @@ test('API tests', async t => {
         assert.strictEqual(response.body.state, 'new');
     });
 
-    await t.test('Register Gmail account 2', async () => {
+    await t.test('Register Gmail account 2', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         const response = await server
             .post(`/v1/account`)
             .send({
@@ -571,7 +594,11 @@ test('API tests', async t => {
         assert.strictEqual(response.body.state, 'new');
     });
 
-    await t.test('wait until Gmail accounts are available', async () => {
+    await t.test('wait until Gmail accounts are available', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         for (let account of [gmailAccountId1, gmailAccountId2]) {
             // wait until connected
             let available = false;
@@ -596,19 +623,31 @@ test('API tests', async t => {
         }
     });
 
-    await t.test('list mailboxes for Gmail account 1', async () => {
+    await t.test('list mailboxes for Gmail account 1', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         const response = await server.get(`/v1/account/${gmailAccountId1}/mailboxes`).expect(200);
 
         assert.ok(response.body.mailboxes.some(mb => mb.specialUse === '\\Inbox'));
     });
 
-    await t.test('list inbox messages for Gmail account 1 (greeting emails)', async () => {
+    await t.test('list inbox messages for Gmail account 1 (greeting emails)', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         const response = await server.get(`/v1/account/${gmailAccountId1}/messages?path=INBOX`).expect(200);
 
         assert.ok(response.body.total > 0);
     });
 
-    await t.test('submit by API', async () => {
+    await t.test('submit by API', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         let messageId = `<test-${Date.now()}@example.com>`;
 
         const response = await server
@@ -662,7 +701,11 @@ test('API tests', async t => {
         assert.ok(gmailReceivedEmailId);
     });
 
-    await t.test('reply by reference by API', async () => {
+    await t.test('reply by reference by API', async (t) => {
+        if (!hasGmailConfig) {
+            t.skip('Gmail API credentials not configured');
+            return;
+        }
         let messageId = `<test-${Date.now()}@example.com>`;
 
         const response = await server
