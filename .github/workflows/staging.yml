@@ -43,8 +43,8 @@ jobs:
                   platforms: ${{ steps.buildx.outputs.platforms }}
                   push: true
                   tags: |
-                      ghcr.io/${{ github.repository }}:staging
-                      ghcr.io/${{ github.repository }}:staging-${{ github.sha }}
+                      ghcr.io/swipe-one/emailengine:staging
+                      ghcr.io/swipe-one/emailengine:staging-${{ github.sha }}
 
             - name: Deploy to staging server
               uses: appleboy/ssh-action@v1.0.3
