@@ -36,7 +36,8 @@ COPY sbom.json sbom.json
 COPY server.js server.js
 
 RUN mkdir -p .git/refs/heads
-COPY .git/refs/heads/master .git/refs/heads/master
+COPY .git/HEAD .git/HEAD
+COPY .git/refs .git/refs
 
 COPY update-info.sh update-info.sh
 
