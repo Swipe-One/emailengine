@@ -1,6 +1,6 @@
 'use strict';
 
-const { parentPort } = require('worker_threads');
+const { parentPort, threadId } = require('worker_threads');
 
 const packageData = require('../package.json');
 const config = require('wild-config');
@@ -76,6 +76,18 @@ async function call(message, transferList) {
             err.statusCode = 504;
             err.code = 'Timeout';
             err.ttl = ttl;
+            
+            // Log SMTP timeout
+            logger.warn({
+                msg: 'SMTP timeout detected',
+                event: 'smtp_timeout',
+                account: message.account || 'unknown',
+                timeout: ttl,
+                command: message.cmd || 'unknown',
+                worker: 'smtp',
+                threadId
+            });
+            
             reject(err);
         }, ttl);
 

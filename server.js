@@ -52,6 +52,7 @@ const { Worker: WorkerThread, SHARE_ENV } = require('worker_threads');
 const packageData = require('./package.json');
 const config = require('wild-config');
 const logger = require('./lib/logger');
+const ProductionMonitor = require('./lib/production-monitor');
 
 // Import utility functions
 const {
@@ -242,6 +243,9 @@ const METRIC_RECENT = 10 * 60 * 1000; // 10min
 // API proxy configuration
 const HAS_API_PROXY_SET = hasEnvValue('EENGINE_API_PROXY') || typeof config.api.proxy !== 'undefined';
 const API_PROXY = hasEnvValue('EENGINE_API_PROXY') ? getBoolean(readEnvValue('EENGINE_API_PROXY')) : getBoolean(config.api.proxy);
+
+// Initialize production monitor
+const productionMonitor = new ProductionMonitor();
 
 // Log startup information
 logger.info({
@@ -813,10 +817,24 @@ let spawnWorker = async type => {
                     let accountList = workerAssigned.get(worker);
                     workerAssigned.delete(worker);
 
+                    // Log worker failure and account reassignment
+                    productionMonitor.logWorkerFailure({
+                        workerType: type,
+                        threadId: worker.threadId,
+                        exitCode,
+                        accountsAffected: accountList.length
+                    });
+
                     for (let account of accountList) {
                         assigned.delete(account);
                         unassigned.add(account);
                     }
+
+                    // Log account reassignment
+                    productionMonitor.logAccountAssignment('reassign_required', {
+                        accountsAffected: accountList.length,
+                        failedWorker: worker.threadId
+                    });
 
                     assignAccounts().catch(err => logger.error({ msg: 'Unable to reassign accounts', n: 1, err }));
                 }
@@ -849,6 +867,14 @@ let spawnWorker = async type => {
 
                 reject(error);
             }
+
+            // Log worker exit with production monitor
+            productionMonitor.logWorkerLifecycle('exit', {
+                workerType: type,
+                threadId: worker.threadId,
+                exitCode,
+                isOnline
+            });
 
             exitHandler(exitCode).catch(err => {
                 logger.error({ msg: 'Error handling worker exit', exitCode, type, worker: worker.threadId, err });
@@ -1078,6 +1104,13 @@ let spawnWorker = async type => {
                         isOnline = true;
                         resolve(worker.threadId);
 
+                        // Log worker ready with production monitor
+                        productionMonitor.logWorkerLifecycle('ready', {
+                            workerType: 'imap',
+                            threadId: worker.threadId,
+                            isOnline
+                        });
+
                         if (imapInitialWorkersLoaded) {
                             // Assign accounts if all workers are loaded
                             assignAccounts().catch(err => logger.error({ msg: 'Unable to assign accounts', n: 2, err }));
@@ -1177,6 +1210,13 @@ async function assignAccounts() {
             setupDelay: CONNECTION_SETUP_DELAY
         });
 
+        // Log account assignment start with production monitor
+        productionMonitor.logAccountAssignment('start', {
+            unassigned: unassigned.size,
+            workersAvailable: availableIMAPWorkers.size,
+            setupDelay: CONNECTION_SETUP_DELAY
+        });
+
         // Assign each unassigned account
         for (let account of unassigned) {
             if (!availableIMAPWorkers.size) {
@@ -1200,6 +1240,13 @@ async function assignAccounts() {
             await call(worker, {
                 cmd: 'assign',
                 account,
+                runIndex
+            });
+
+            // Log individual account assignment with production monitor
+            productionMonitor.logAccountAssignment('assigned', {
+                account,
+                worker: worker.threadId,
                 runIndex
             });
 

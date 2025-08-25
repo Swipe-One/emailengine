@@ -1,5 +1,5 @@
 'use strict';
-const { parentPort } = require('worker_threads');
+const { parentPort, threadId } = require('worker_threads');
 
 const packageData = require('../package.json');
 const config = require('wild-config');
@@ -129,6 +129,17 @@ class ConnectionHandler {
 
     async assignConnection(account, runIndex, initOpts) {
         logger.info({ msg: 'Assigned account to worker', account });
+        
+        // Log account assignment
+        logger.info({
+            msg: 'Account assigned to IMAP worker',
+            event: 'account_assignment',
+            assignmentEvent: 'imap_assigned',
+            account,
+            worker: 'imap',
+            threadId,
+            runIndex
+        });
 
         if (!this.runIndex) {
             this.runIndex = runIndex;
