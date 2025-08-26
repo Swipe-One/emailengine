@@ -364,6 +364,32 @@ async function call(message, transferList) {
             err.statusCode = 504;
             err.code = 'Timeout';
             err.ttl = ttl;
+            
+            // Log API timeout locally
+            logger.warn({
+                msg: 'API timeout detected',
+                event: 'api_timeout',
+                timeout: ttl,
+                command: message.cmd || 'unknown',
+                worker: 'api'
+            });
+            
+            // Log API timeout to production monitor via parent
+            try {
+                parentPort.postMessage({
+                    cmd: 'log',
+                    level: 'warn',
+                    event: 'api_timeout',
+                    data: {
+                        timeout: ttl,
+                        command: message.cmd || 'unknown',
+                        worker: 'api'
+                    }
+                });
+            } catch (err) {
+                // Ignore logging errors
+            }
+            
             reject(err);
         }, ttl);
 

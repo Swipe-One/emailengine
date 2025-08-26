@@ -77,7 +77,7 @@ async function call(message, transferList) {
             err.code = 'Timeout';
             err.ttl = ttl;
             
-            // Log SMTP timeout
+            // Log SMTP timeout locally
             logger.warn({
                 msg: 'SMTP timeout detected',
                 event: 'smtp_timeout',
@@ -87,6 +87,24 @@ async function call(message, transferList) {
                 worker: 'smtp',
                 threadId
             });
+            
+            // Log SMTP timeout to production monitor via parent
+            try {
+                parentPort.postMessage({
+                    cmd: 'log',
+                    level: 'warn',
+                    event: 'smtp_timeout',
+                    data: {
+                        account: message.account || 'unknown',
+                        timeout: ttl,
+                        command: message.cmd || 'unknown',
+                        worker: 'smtp',
+                        threadId
+                    }
+                });
+            } catch (err) {
+                // Ignore logging errors
+            }
             
             reject(err);
         }, ttl);
@@ -105,7 +123,7 @@ async function call(message, transferList) {
         } catch (err) {
             clearTimeout(timer);
             callQueue.delete(mid);
-            return reject(err);
+            reject(err);
         }
     });
 }

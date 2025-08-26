@@ -67,6 +67,32 @@ async function call(message, transferList) {
             err.statusCode = 504;
             err.code = 'Timeout';
             err.ttl = ttl;
+            
+            // Log webhooks timeout locally
+            logger.warn({
+                msg: 'Webhooks timeout detected',
+                event: 'webhooks_timeout',
+                timeout: ttl,
+                command: message.cmd || 'unknown',
+                worker: 'webhooks'
+            });
+            
+            // Log webhooks timeout to production monitor via parent
+            try {
+                parentPort.postMessage({
+                    cmd: 'log',
+                    level: 'warn',
+                    event: 'webhooks_timeout',
+                    data: {
+                        timeout: ttl,
+                        command: message.cmd || 'unknown',
+                        worker: 'webhooks'
+                    }
+                });
+            } catch (err) {
+                // Ignore logging errors
+            }
+            
             reject(err);
         }, ttl);
 

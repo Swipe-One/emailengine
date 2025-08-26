@@ -75,6 +75,32 @@ async function call(message, transferList) {
             err.statusCode = 504;
             err.code = 'Timeout';
             err.ttl = ttl;
+            
+            // Log submit timeout locally
+            logger.warn({
+                msg: 'Submit timeout detected',
+                event: 'submit_timeout',
+                timeout: ttl,
+                command: message.cmd || 'unknown',
+                worker: 'submit'
+            });
+            
+            // Log submit timeout to production monitor via parent
+            try {
+                parentPort.postMessage({
+                    cmd: 'log',
+                    level: 'warn',
+                    event: 'submit_timeout',
+                    data: {
+                        timeout: ttl,
+                        command: message.cmd || 'unknown',
+                        worker: 'submit'
+                    }
+                });
+            } catch (err) {
+                // Ignore logging errors
+            }
+            
             reject(err);
         }, ttl);
 

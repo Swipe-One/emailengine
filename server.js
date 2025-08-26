@@ -860,36 +860,63 @@ let spawnWorker = async type => {
                 updateServerState(type, suspendedWorkerTypes.has(type) ? 'suspended' : 'exited');
             }
 
-            // Handle IMAP worker cleanup
-            if (type === 'imap') {
-                availableIMAPWorkers.delete(worker);
+            // Handle worker cleanup based on type
+            switch (type) {
+                case 'imap':
+                    availableIMAPWorkers.delete(worker);
 
-                // Reassign accounts from dead worker
-                if (workerAssigned.has(worker)) {
-                    let accountList = workerAssigned.get(worker);
-                    workerAssigned.delete(worker);
+                    // Reassign accounts from dead worker
+                    if (workerAssigned.has(worker)) {
+                        let accountList = workerAssigned.get(worker);
+                        workerAssigned.delete(worker);
 
-                    // Log worker failure and account reassignment
+                        // Log worker failure and account reassignment
+                        productionMonitor.logWorkerFailure({
+                            workerType: type,
+                            threadId: worker.threadId,
+                            exitCode,
+                            accountsAffected: accountList.length
+                        });
+
+                        for (let account of accountList) {
+                            assigned.delete(account);
+                            unassigned.add(account);
+                        }
+
+                        // Log account reassignment
+                        productionMonitor.logAccountAssignment('reassign_required', {
+                            accountsAffected: accountList.length,
+                            failedWorker: worker.threadId
+                        });
+                        
+                        // Log individual account reassignments
+                        for (let account of accountList) {
+                            productionMonitor.logAccountReassignment({
+                                account,
+                                fromWorker: worker.threadId,
+                                toWorker: 'pending',
+                                reason: 'worker_failure'
+                            });
+                        }
+
+                        assignAccounts().catch(err => logger.error({ msg: 'Unable to reassign accounts', n: 1, err }));
+                    }
+                    break;
+                    
+                case 'api':
+                case 'webhooks':
+                case 'submit':
+                case 'documents':
+                case 'imapProxy':
+                case 'smtp':
+                    // Log worker failure for non-IMAP workers
                     productionMonitor.logWorkerFailure({
                         workerType: type,
                         threadId: worker.threadId,
                         exitCode,
-                        accountsAffected: accountList.length
+                        accountsAffected: 0
                     });
-
-                    for (let account of accountList) {
-                        assigned.delete(account);
-                        unassigned.add(account);
-                    }
-
-                    // Log account reassignment
-                    productionMonitor.logAccountAssignment('reassign_required', {
-                        accountsAffected: accountList.length,
-                        failedWorker: worker.threadId
-                    });
-
-                    assignAccounts().catch(err => logger.error({ msg: 'Unable to reassign accounts', n: 1, err }));
-                }
+                    break;
             }
 
             if (isClosing) {
@@ -1014,6 +1041,77 @@ let spawnWorker = async type => {
                     });
             }
 
+            // Handle logging messages
+            if (message.cmd === 'log') {
+                const { event, data } = message;
+                
+                // Log to production monitor based on event type
+                switch (event) {
+                    case 'imap_account_assignment':
+                        productionMonitor.logImapAccountAssignment(data);
+                        break;
+                    case 'imap_connection_established':
+                        productionMonitor.logImapConnectionIssue('established', data);
+                        break;
+                    case 'imap_connection_status_change':
+                        productionMonitor.logImapConnectionIssue('status_change', data);
+                        break;
+                    case 'smtp_timeout':
+                        productionMonitor.logSmtpTimeout(data);
+                        break;
+                    case 'api_timeout':
+                        // Log API timeout as a general timeout event
+                        productionMonitor.logSmtpTimeout({
+                            ...data,
+                            account: 'api_request',
+                            command: data.command || 'unknown'
+                        });
+                        break;
+                    case 'submit_timeout':
+                        // Log submit timeout as a general timeout event
+                        productionMonitor.logSmtpTimeout({
+                            ...data,
+                            account: 'submit_request',
+                            command: data.command || 'unknown'
+                        });
+                        break;
+                    case 'webhooks_timeout':
+                        // Log webhooks timeout as a general timeout event
+                        productionMonitor.logSmtpTimeout({
+                            ...data,
+                            account: 'webhooks_request',
+                            command: data.command || 'unknown'
+                        });
+                        break;
+                    case 'documents_timeout':
+                        // Log documents timeout as a general timeout event
+                        productionMonitor.logSmtpTimeout({
+                            ...data,
+                            account: 'documents_request',
+                            command: data.command || 'unknown'
+                        });
+                        break;
+                    case 'imap_timeout':
+                        // Log IMAP timeout as a general timeout event
+                        productionMonitor.logSmtpTimeout({
+                            ...data,
+                            account: 'imap_request',
+                            command: data.command || 'unknown'
+                        });
+                        break;
+                    default:
+                        // Log unknown events as info
+                        logger.info({
+                            msg: `Worker log event: ${event}`,
+                            event: 'worker_log',
+                            workerType: type,
+                            threadId: worker.threadId,
+                            ...data
+                        });
+                }
+                return;
+            }
+            
             // Handle metrics messages
             switch (message.cmd) {
                 case 'metrics': {
@@ -1175,6 +1273,88 @@ let spawnWorker = async type => {
                         // API worker is ready
                         isOnline = true;
                         resolve(worker.threadId);
+                        
+                        // Log API worker ready with production monitor
+                        productionMonitor.logWorkerLifecycle('ready', {
+                            workerType: 'api',
+                            threadId: worker.threadId,
+                            isOnline
+                        });
+                    }
+                    break;
+                    
+                case 'webhooks':
+                    if (message.cmd === 'ready') {
+                        // Webhook worker is ready
+                        isOnline = true;
+                        resolve(worker.threadId);
+                        
+                        // Log webhook worker ready with production monitor
+                        productionMonitor.logWorkerLifecycle('ready', {
+                            workerType: 'webhooks',
+                            threadId: worker.threadId,
+                            isOnline
+                        });
+                    }
+                    break;
+                    
+                case 'submit':
+                    if (message.cmd === 'ready') {
+                        // Submit worker is ready
+                        isOnline = true;
+                        resolve(worker.threadId);
+                        
+                        // Log submit worker ready with production monitor
+                        productionMonitor.logWorkerLifecycle('ready', {
+                            workerType: 'submit',
+                            threadId: worker.threadId,
+                            isOnline
+                        });
+                    }
+                    break;
+                    
+                case 'documents':
+                    if (message.cmd === 'ready') {
+                        // Documents worker is ready
+                        isOnline = true;
+                        resolve(worker.threadId);
+                        
+                        // Log documents worker ready with production monitor
+                        productionMonitor.logWorkerLifecycle('ready', {
+                            workerType: 'documents',
+                            threadId: worker.threadId,
+                            isOnline
+                        });
+                    }
+                    break;
+                    
+                case 'imapProxy':
+                    if (message.cmd === 'ready') {
+                        // IMAP proxy worker is ready
+                        isOnline = true;
+                        resolve(worker.threadId);
+                        
+                        // Log IMAP proxy worker ready with production monitor
+                        productionMonitor.logWorkerLifecycle('ready', {
+                            workerType: 'imapProxy',
+                            threadId: worker.threadId,
+                            isOnline
+                        });
+                    }
+                    break;
+                    
+                case 'smtp':
+                    if (message.cmd === 'ready') {
+                        // SMTP worker is ready
+                        isOnline = true;
+                        resolve(worker.threadId);
+                        
+                        // Log SMTP worker ready with production monitor
+                        productionMonitor.logWorkerLifecycle('ready', {
+                            workerType: 'smtp',
+                            threadId: worker.threadId,
+                            isOnline
+                        });
                     }
                     break;
             }
@@ -1299,6 +1479,14 @@ async function assignAccounts() {
             productionMonitor.logAccountAssignment('assigned', {
                 account,
                 worker: worker.threadId,
+                runIndex
+            });
+            
+            // Log IMAP account assignment specifically
+            productionMonitor.logImapAccountAssignment({
+                account,
+                worker: worker.threadId,
+                status: 'assigned',
                 runIndex
             });
 

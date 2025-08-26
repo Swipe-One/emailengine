@@ -1,5 +1,5 @@
 'use strict';
-const { parentPort, threadId } = require('worker_threads');
+const { parentPort } = require('worker_threads');
 
 const packageData = require('../package.json');
 const config = require('wild-config');
@@ -128,19 +128,28 @@ class ConnectionHandler {
     }
 
     async assignConnection(account, runIndex, initOpts) {
+        // Log account assignment locally
         logger.info({ msg: 'Assigned account to worker', account });
         
-        // Log account assignment
-        logger.info({
-            msg: 'Account assigned to IMAP worker',
-            event: 'account_assignment',
-            assignmentEvent: 'imap_assigned',
-            account,
-            worker: 'imap',
-            threadId,
-            runIndex
-        });
-
+        // Log IMAP account assignment with production monitor
+        try {
+            if (parentPort) {
+                parentPort.postMessage({
+                    cmd: 'log',
+                    level: 'info',
+                    event: 'imap_account_assignment',
+                    data: {
+                        account,
+                        worker: 'imap',
+                        status: 'assigned',
+                        runIndex
+                            }
+                });
+            }
+        } catch (err) {
+            // Ignore logging errors
+        }
+        
         if (!this.runIndex) {
             this.runIndex = runIndex;
         }
@@ -256,6 +265,25 @@ class ConnectionHandler {
         accountObject.connection.init(initOpts).catch(err => {
             logger.error({ account, err });
         });
+        
+        // Log connection establishment
+        try {
+            if (parentPort) {
+                parentPort.postMessage({
+                    cmd: 'log',
+                    level: 'info',
+                    event: 'imap_connection_established',
+                    data: {
+                        account,
+                        worker: 'imap',
+                        status: 'initializing',
+                        runIndex
+                    }
+                });
+            }
+        } catch (err) {
+            // Ignore logging errors
+        }
     }
 
     async deleteConnection(account) {
@@ -285,6 +313,26 @@ class ConnectionHandler {
                 await redis.hSetExists(accountObject.connection.getAccountKey(), 'state', state);
                 accountObject.connection.state = state;
                 await emitChangeEvent(this.logger, account, 'state', state);
+                
+                // Log connection status change
+                try {
+                    if (parentPort) {
+                        parentPort.postMessage({
+                            cmd: 'log',
+                            level: 'info',
+                            event: 'imap_connection_status_change',
+                            data: {
+                                account,
+                                worker: 'imap',
+                                status: 'connecting',
+                                previousState: accountObject.connection.state || 'unknown'
+                            }
+                        });
+                    }
+                } catch (err) {
+                    // Ignore logging errors
+                }
+                
                 await accountObject.connection.reconnect(true);
             }
         }
@@ -322,6 +370,24 @@ class ConnectionHandler {
                 });
 
                 await accountObject.connection.pause();
+                
+                // Log connection status change
+                try {
+                    if (parentPort) {
+                        parentPort.postMessage({
+                            cmd: 'log',
+                            level: 'info',
+                            event: 'imap_connection_status_change',
+                            data: {
+                                account,
+                                worker: 'imap',
+                                status: 'paused'
+                            }
+                        });
+                    }
+                } catch (err) {
+                    // Ignore logging errors
+                }
 
                 return true;
             }
@@ -341,6 +407,24 @@ class ConnectionHandler {
                 });
 
                 await accountObject.connection.resume();
+                
+                // Log connection status change
+                try {
+                    if (parentPort) {
+                        parentPort.postMessage({
+                            cmd: 'log',
+                            level: 'info',
+                            event: 'imap_connection_status_change',
+                            data: {
+                                account,
+                                worker: 'imap',
+                                status: 'resumed'
+                            }
+                        });
+                    }
+                } catch (err) {
+                    // Ignore logging errors
+                }
 
                 return true;
             }
@@ -362,7 +446,25 @@ class ConnectionHandler {
                 await accountObject.connection.close();
             }
 
-            await this.assignConnection(account, false, { forceWatchRenewal: true });
+                            await this.assignConnection(account, false, { forceWatchRenewal: true });
+                
+                // Log connection status change
+                try {
+                    if (parentPort) {
+                        parentPort.postMessage({
+                            cmd: 'log',
+                            level: 'info',
+                            event: 'imap_connection_status_change',
+                            data: {
+                                account,
+                                worker: 'imap',
+                                status: 'reconnecting'
+                            }
+                        });
+                    }
+                } catch (err) {
+                    // Ignore logging errors
+                }
         }
     }
 
@@ -821,6 +923,32 @@ class ConnectionHandler {
                 err.statusCode = 504;
                 err.code = 'Timeout';
                 err.ttl = ttl;
+                
+                // Log IMAP timeout locally
+                logger.warn({
+                    msg: 'IMAP timeout detected',
+                    event: 'imap_timeout',
+                    timeout: ttl,
+                    command: message.cmd || 'unknown',
+                    worker: 'imap'
+                });
+                
+                // Log IMAP timeout to production monitor via parent
+                try {
+                    parentPort.postMessage({
+                        cmd: 'log',
+                        level: 'warn',
+                        event: 'imap_timeout',
+                        data: {
+                            timeout: ttl,
+                            command: message.cmd || 'unknown',
+                            worker: 'imap'
+                        }
+                    });
+                } catch (err) {
+                    // Ignore logging errors
+                }
+                
                 reject(err);
             }, ttl);
 

@@ -72,6 +72,32 @@ async function call(message, transferList) {
             err.statusCode = 504;
             err.code = 'Timeout';
             err.ttl = ttl;
+            
+            // Log documents timeout locally
+            logger.warn({
+                msg: 'Documents timeout detected',
+                event: 'documents_timeout',
+                timeout: ttl,
+                command: message.cmd || 'unknown',
+                worker: 'documents'
+            });
+            
+            // Log documents timeout to production monitor via parent
+            try {
+                parentPort.postMessage({
+                    cmd: 'log',
+                    level: 'warn',
+                    event: 'documents_timeout',
+                    data: {
+                        timeout: ttl,
+                        command: message.cmd || 'unknown',
+                        worker: 'documents'
+                    }
+                });
+            } catch (err) {
+                // Ignore logging errors
+            }
+            
             reject(err);
         }, ttl);
 
