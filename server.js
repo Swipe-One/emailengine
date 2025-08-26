@@ -655,16 +655,48 @@ async function getThreadsInfo() {
     // Collect info from all worker threads
     for (let [type, workerSet] of workers) {
         if (workerSet && workerSet.size) {
+            logger.debug({ 
+                msg: 'Processing workers for thread info', 
+                workerType: type, 
+                workerCount: workerSet.size 
+            });
+            
             for (let worker of workerSet) {
+                logger.debug({ 
+                    msg: 'Requesting resource usage from worker', 
+                    workerType: type, 
+                    workerThreadId: worker.threadId 
+                });
+                
                 let resourceUsage;
                 try {
-                    // Request resource usage from worker
-                    resourceUsage = await call(worker, { cmd: 'resource-usage' });
+                    // Request resource usage from worker with reasonable timeout
+                    resourceUsage = await call(worker, { 
+                        cmd: 'resource-usage'
+                    });
+                    
+                    logger.debug({ 
+                        msg: 'Worker resource usage received successfully', 
+                        workerType: type, 
+                        workerThreadId: worker.threadId 
+                    });
                 } catch (err) {
+                    // Log which specific worker failed
+                    logger.error({ 
+                        msg: 'Worker resource usage failed', 
+                        workerType: type, 
+                        workerThreadId: worker.threadId,
+                        error: err.message,
+                        code: err.code,
+                        timeout: err.code === 'Timeout'
+                    });
+                    
                     resourceUsage = {
                         resourceUsageError: {
                             error: err.message,
-                            code: err.code
+                            code: err.code,
+                            workerType: type,
+                            workerThreadId: worker.threadId
                         }
                     };
                 }
@@ -694,6 +726,26 @@ async function getThreadsInfo() {
             threadInfo.config = THREAD_CONFIG_VALUES[threadInfo.type];
         }
     });
+
+    // Log summary of worker status
+    let totalWorkers = threadsInfo.length - 1; // Exclude main thread
+    let failedWorkers = threadsInfo.filter(t => t.resourceUsageError).length;
+    let successfulWorkers = totalWorkers - failedWorkers;
+    
+    if (failedWorkers > 0) {
+        logger.warn({ 
+            msg: 'Worker status summary', 
+            totalWorkers, 
+            successfulWorkers, 
+            failedWorkers,
+            successRate: `${((successfulWorkers / totalWorkers) * 100).toFixed(1)}%`
+        });
+    } else {
+        logger.debug({ 
+            msg: 'All workers responded successfully', 
+            totalWorkers 
+        });
+    }
 
     return threadsInfo;
 }
@@ -2260,14 +2312,34 @@ async function collectMetrics() {
     // Collect from each IMAP worker
     if (workers.has('imap')) {
         let imapWorkers = workers.get('imap');
+        logger.debug({ 
+            msg: 'Starting IMAP metrics collection', 
+            totalWorkers: imapWorkers.size,
+            availableWorkers: availableIMAPWorkers.size
+        });
+        
         for (let imapWorker of imapWorkers) {
             if (!availableIMAPWorkers.has(imapWorker)) {
                 // Worker not ready yet
                 continue;
             }
 
+            logger.debug({ 
+                msg: 'Requesting connection count from IMAP worker', 
+                workerThreadId: imapWorker.threadId 
+            });
+
             try {
-                let workerStats = await call(imapWorker, { cmd: 'countConnections' });
+                let workerStats = await call(imapWorker, { 
+                    cmd: 'countConnections'
+                });
+                
+                logger.debug({ 
+                    msg: 'IMAP worker connection count received successfully', 
+                    workerThreadId: imapWorker.threadId,
+                    connectionCounts: workerStats
+                });
+                
                 Object.keys(workerStats || {}).forEach(status => {
                     if (!metricsResult[status]) {
                         metricsResult[status] = 0;
@@ -2275,7 +2347,15 @@ async function collectMetrics() {
                     metricsResult[status] += Number(workerStats[status]) || 0;
                 });
             } catch (err) {
-                logger.error({ msg: 'Connection count failed', err });
+                // Log which specific IMAP worker failed
+                logger.error({ 
+                    msg: 'Connection count failed', 
+                    workerThreadId: imapWorker.threadId,
+                    error: err.message,
+                    code: err.code,
+                    timeout: err.code === 'Timeout',
+                    ttl: err.ttl
+                });
             }
         }
     }
@@ -2287,6 +2367,21 @@ async function collectMetrics() {
     Object.keys(metricsResult).forEach(status => {
         metrics.imapConnections.set({ status }, metricsResult[status]);
     });
+
+    // Log metrics collection summary
+    if (workers.has('imap')) {
+        let imapWorkers = workers.get('imap');
+        let totalIMAPWorkers = imapWorkers.size;
+        let availableIMAPWorkers = Array.from(imapWorkers).filter(w => availableIMAPWorkers.has(w)).length;
+        
+        logger.debug({ 
+            msg: 'Metrics collection completed', 
+            totalIMAPWorkers, 
+            availableIMAPWorkers,
+            metricsCollected: Object.keys(metricsResult).length,
+            totalConnections: Object.values(metricsResult).reduce((sum, count) => sum + count, 0)
+        });
+    }
 }
 
 /**
