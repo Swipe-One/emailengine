@@ -9,8 +9,28 @@ const { REDIS_PREFIX } = require('../lib/consts');
 
 const { getDuration, getBoolean, emitChangeEvent, readEnvValue, hasEnvValue, threadStats } = require('../lib/tools');
 
+// Initialize Sentry for IMAP worker with event loop monitoring
+const { initSentry, captureWorkerException, startWorkerTransaction } = require('../lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'imap',
+    eventLoopThreshold: 1000, // 1 second threshold for IMAP operations
+    enableHttpInstrumentation: false,
+    additionalTags: {
+        worker_process: 'imap_sync',
+        critical_component: 'email_processing'
+    }
+});
+
+// Fallback to Bugsnag if configured and Sentry not available
 const Bugsnag = require('@bugsnag/js');
-if (readEnvValue('BUGSNAG_API_KEY')) {
+let errorNotifier = null;
+
+if (sentry) {
+    // Use Sentry for error reporting
+    errorNotifier = (error, context = {}) => captureWorkerException(error, context, 'imap');
+    logger.notifyError = errorNotifier;
+} else if (readEnvValue('BUGSNAG_API_KEY')) {
+    // Fallback to Bugsnag
     Bugsnag.start({
         apiKey: readEnvValue('BUGSNAG_API_KEY'),
         appVersion: packageData.version,
@@ -82,6 +102,12 @@ class ConnectionHandler {
         // Reconnection metrics tracking
         this.reconnectMetrics = new Map(); // Track metrics per account
         this.metricsWindow = 60000; // 1-minute window
+        
+        // Sentry context tracking
+        this.sentryContext = {
+            worker_id: process.pid,
+            start_time: new Date().toISOString()
+        };
     }
 
     async init() {
@@ -173,28 +199,51 @@ class ConnectionHandler {
     }
 
     async assignConnection(account, runIndex, initOpts) {
-        logger.info({ msg: 'Assigned account to worker', account });
+        // Start Sentry transaction for account assignment monitoring
+        const transaction = sentry && startWorkerTransaction(
+            'imap.account.assign',
+            'imap_worker_operation',
+            { 
+                account: account,
+                run_index: runIndex,
+                total_accounts: this.accounts.size 
+            },
+            'imap'
+        );
 
-        if (!this.runIndex) {
-            this.runIndex = runIndex;
-        }
+        try {
+            logger.info({ msg: 'Assigned account to worker', account });
 
-        if (!runIndex && this.runIndex) {
-            runIndex = this.runIndex;
-        }
+            if (!this.runIndex) {
+                this.runIndex = runIndex;
+            }
 
-        let accountLogger = await this.getAccountLogger(account);
-        let secret = await getSecret();
-        let accountObject = new Account({
-            redis,
-            account,
-            secret,
-            esClient: await getESClient(logger)
-        });
+            if (!runIndex && this.runIndex) {
+                runIndex = this.runIndex;
+            }
 
-        this.accounts.set(account, accountObject);
+            let accountLogger = await this.getAccountLogger(account);
+            let secret = await getSecret();
+            let accountObject = new Account({
+                redis,
+                account,
+                secret,
+                esClient: await getESClient(logger)
+            });
 
-        const accountData = await accountObject.loadAccountData();
+            this.accounts.set(account, accountObject);
+
+            // Update Sentry context with current account info
+            if (sentry) {
+                sentry.setContext('imap_worker', {
+                    ...this.sentryContext,
+                    active_accounts: this.accounts.size,
+                    current_account: account,
+                    run_index: runIndex
+                });
+            }
+
+            const accountData = await accountObject.loadAccountData();
 
         if (accountData.oauth2 && accountData.oauth2.auth) {
             let oauth2App;
@@ -289,7 +338,37 @@ class ConnectionHandler {
         // do not wait before returning as it may take forever
         accountObject.connection.init(initOpts).catch(err => {
             logger.error({ account, err });
+            if (sentry) {
+                captureWorkerException(err, { account, operation: 'connection_init' }, 'imap');
+            }
         });
+
+        // Mark transaction as successful
+        if (transaction) {
+            transaction.setStatus('ok');
+            transaction.finish();
+        }
+        
+        } catch (error) {
+            logger.error({ msg: 'Failed to assign connection', account, error });
+            
+            // Capture error in Sentry
+            if (sentry) {
+                captureWorkerException(error, {
+                    account,
+                    run_index: runIndex,
+                    operation: 'assign_connection'
+                }, 'imap');
+            }
+            
+            // Mark transaction as failed
+            if (transaction) {
+                transaction.setStatus('internal_error');
+                transaction.finish();
+            }
+            
+            throw error;
+        }
     }
 
     async deleteConnection(account) {

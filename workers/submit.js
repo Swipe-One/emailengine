@@ -11,8 +11,28 @@ const { getDuration, readEnvValue, threadStats } = require('../lib/tools');
 const { webhooks: Webhooks } = require('../lib/webhooks');
 const settings = require('../lib/settings');
 
+// Initialize Sentry for submit worker
+const { initSentry, captureWorkerException, startWorkerTransaction } = require('../lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'submit',
+    eventLoopThreshold: 1000,
+    enableHttpInstrumentation: false,
+    additionalTags: {
+        worker_process: 'email_submission',
+        critical_component: 'smtp_delivery'
+    }
+});
+
+// Fallback to Bugsnag if configured and Sentry not available
 const Bugsnag = require('@bugsnag/js');
-if (readEnvValue('BUGSNAG_API_KEY')) {
+let errorNotifier = null;
+
+if (sentry) {
+    // Use Sentry for error reporting
+    errorNotifier = (error, context = {}) => captureWorkerException(error, context, 'submit');
+    logger.notifyError = errorNotifier;
+} else if (readEnvValue('BUGSNAG_API_KEY')) {
+    // Fallback to Bugsnag
     Bugsnag.start({
         apiKey: readEnvValue('BUGSNAG_API_KEY'),
         appVersion: packageData.version,

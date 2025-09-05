@@ -8,8 +8,28 @@ const logger = require('../lib/logger');
 
 const { getDuration, emitChangeEvent, readEnvValue, matchIp, threadStats, loadTlsConfig } = require('../lib/tools');
 
+// Initialize Sentry for SMTP worker
+const { initSentry, captureWorkerException, startWorkerTransaction } = require('../lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'smtp',
+    eventLoopThreshold: 1000,
+    enableHttpInstrumentation: false,
+    additionalTags: {
+        worker_process: 'smtp_proxy',
+        critical_component: 'email_relay'
+    }
+});
+
+// Fallback to Bugsnag if configured and Sentry not available
 const Bugsnag = require('@bugsnag/js');
-if (readEnvValue('BUGSNAG_API_KEY')) {
+let errorNotifier = null;
+
+if (sentry) {
+    // Use Sentry for error reporting
+    errorNotifier = (error, context = {}) => captureWorkerException(error, context, 'smtp');
+    logger.notifyError = errorNotifier;
+} else if (readEnvValue('BUGSNAG_API_KEY')) {
+    // Fallback to Bugsnag
     Bugsnag.start({
         apiKey: readEnvValue('BUGSNAG_API_KEY'),
         appVersion: packageData.version,

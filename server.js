@@ -20,6 +20,17 @@ if (!process.env.EE_ENV_LOADED) {
     process.env.EE_ENV_LOADED = 'true';
 }
 
+// Initialize Sentry early for main process monitoring
+const { initSentry } = require('./lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'main',
+    eventLoopThreshold: 500,
+    enableHttpInstrumentation: false,
+    additionalTags: {
+        server_type: 'emailengine_main'
+    }
+});
+
 // Attempt to change working directory to script location
 try {
     process.chdir(__dirname);

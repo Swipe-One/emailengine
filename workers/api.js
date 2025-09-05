@@ -44,8 +44,27 @@ const {
     retryAgent
 } = require('../lib/tools');
 
+// Initialize Sentry for API worker with HTTP instrumentation
+const { initSentry, captureWorkerException, startWorkerTransaction } = require('../lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'api',
+    eventLoopThreshold: 500, // 500ms threshold for API operations
+    enableHttpInstrumentation: true, // Enable HTTP request/response capture
+    additionalTags: {
+        worker_process: 'api_server',
+        critical_component: 'http_interface'
+    }
+});
+
+// Fallback to Bugsnag if configured and Sentry not available
 const Bugsnag = require('@bugsnag/js');
-if (readEnvValue('BUGSNAG_API_KEY')) {
+let errorNotifier = null;
+
+if (sentry) {
+    // Use Sentry for error reporting
+    errorNotifier = (error, context = {}) => captureWorkerException(error, context, 'api');
+} else if (readEnvValue('BUGSNAG_API_KEY')) {
+    // Fallback to Bugsnag
     Bugsnag.start({
         apiKey: readEnvValue('BUGSNAG_API_KEY'),
         appVersion: packageData.version,
@@ -608,6 +627,60 @@ const init = async () => {
             }
         }
     });
+
+    // Add Sentry request monitoring for API endpoints
+    if (sentry) {
+        server.ext('onRequest', (request, h) => {
+            // Start transaction for each request
+            const transaction = sentry.startTransaction({
+                name: `${request.method.toUpperCase()} ${request.route?.path || request.path}`,
+                op: 'http.server',
+                data: {
+                    method: request.method,
+                    url: request.url.pathname,
+                    user_agent: request.headers['user-agent'],
+                    content_length: request.headers['content-length']
+                },
+                tags: {
+                    worker_type: 'api',
+                    endpoint: request.path
+                }
+            });
+
+            // Store transaction in request for later use
+            request.sentryTransaction = transaction;
+            
+            return h.continue;
+        });
+
+        server.ext('onPreResponse', (request, h) => {
+            if (request.sentryTransaction) {
+                const response = request.response;
+                
+                // Set response status and finish transaction
+                if (response.isBoom) {
+                    request.sentryTransaction.setHttpStatus(response.output.statusCode);
+                    request.sentryTransaction.setStatus('internal_error');
+                    
+                    // Capture API errors in Sentry
+                    if (response.output.statusCode >= 500) {
+                        captureWorkerException(response, {
+                            method: request.method,
+                            path: request.path,
+                            status_code: response.output.statusCode
+                        }, 'api');
+                    }
+                } else {
+                    request.sentryTransaction.setHttpStatus(response.statusCode);
+                    request.sentryTransaction.setStatus('ok');
+                }
+                
+                request.sentryTransaction.finish();
+            }
+            
+            return h.continue;
+        });
+    }
 
     let assertPreconditionResult;
     server.decorate('toolkit', 'getESClient', async (...args) => await getESClient(...args));

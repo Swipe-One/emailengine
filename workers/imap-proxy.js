@@ -9,8 +9,28 @@ const { readEnvValue, threadStats } = require('../lib/tools');
 
 const { run } = require('../lib/imapproxy/imap-server');
 
+// Initialize Sentry for IMAP proxy worker
+const { initSentry, captureWorkerException, startWorkerTransaction } = require('../lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'imap-proxy',
+    eventLoopThreshold: 750,
+    enableHttpInstrumentation: false,
+    additionalTags: {
+        worker_process: 'imap_proxy',
+        critical_component: 'imap_relay'
+    }
+});
+
+// Fallback to Bugsnag if configured and Sentry not available
 const Bugsnag = require('@bugsnag/js');
-if (readEnvValue('BUGSNAG_API_KEY')) {
+let errorNotifier = null;
+
+if (sentry) {
+    // Use Sentry for error reporting
+    errorNotifier = (error, context = {}) => captureWorkerException(error, context, 'imap-proxy');
+    logger.notifyError = errorNotifier;
+} else if (readEnvValue('BUGSNAG_API_KEY')) {
+    // Fallback to Bugsnag
     Bugsnag.start({
         apiKey: readEnvValue('BUGSNAG_API_KEY'),
         appVersion: packageData.version,

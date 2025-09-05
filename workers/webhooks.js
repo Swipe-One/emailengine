@@ -12,8 +12,28 @@ const { GooglePubSub } = require('../lib/oauth/pubsub/google');
 
 const { readEnvValue, threadStats, getDuration, retryAgent, getServiceSecret } = require('../lib/tools');
 
+// Initialize Sentry for webhooks worker
+const { initSentry, captureWorkerException, startWorkerTransaction } = require('../lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'webhooks',
+    eventLoopThreshold: 750,
+    enableHttpInstrumentation: true, // Enable for outbound webhook requests
+    additionalTags: {
+        worker_process: 'webhook_delivery',
+        critical_component: 'notification_system'
+    }
+});
+
+// Fallback to Bugsnag if configured and Sentry not available
 const Bugsnag = require('@bugsnag/js');
-if (readEnvValue('BUGSNAG_API_KEY')) {
+let errorNotifier = null;
+
+if (sentry) {
+    // Use Sentry for error reporting
+    errorNotifier = (error, context = {}) => captureWorkerException(error, context, 'webhooks');
+    logger.notifyError = errorNotifier;
+} else if (readEnvValue('BUGSNAG_API_KEY')) {
+    // Fallback to Bugsnag
     Bugsnag.start({
         apiKey: readEnvValue('BUGSNAG_API_KEY'),
         appVersion: packageData.version,

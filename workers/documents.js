@@ -14,8 +14,28 @@ const GB_COLLECT_DELAY = 6 * 3600 * 1000; // 6h
 const GB_FAILURE_DELAY = 3 * 1000;
 const GB_EMPTY_DELAY = 10 * 1000;
 
+// Initialize Sentry for documents worker
+const { initSentry, captureWorkerException, startWorkerTransaction } = require('../lib/sentry-init');
+const sentry = initSentry({
+    workerType: 'documents',
+    eventLoopThreshold: 1500, // Higher threshold for document processing
+    enableHttpInstrumentation: false,
+    additionalTags: {
+        worker_process: 'document_processing',
+        critical_component: 'ai_operations'
+    }
+});
+
+// Fallback to Bugsnag if configured and Sentry not available
 const Bugsnag = require('@bugsnag/js');
-if (readEnvValue('BUGSNAG_API_KEY')) {
+let errorNotifier = null;
+
+if (sentry) {
+    // Use Sentry for error reporting
+    errorNotifier = (error, context = {}) => captureWorkerException(error, context, 'documents');
+    logger.notifyError = errorNotifier;
+} else if (readEnvValue('BUGSNAG_API_KEY')) {
+    // Fallback to Bugsnag
     Bugsnag.start({
         apiKey: readEnvValue('BUGSNAG_API_KEY'),
         appVersion: packageData.version,
