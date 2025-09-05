@@ -4,6 +4,26 @@ const { parentPort } = require('worker_threads');
 const packageData = require('../package.json');
 const config = require('wild-config');
 const logger = require('../lib/logger');
+const Sentry = require('@sentry/node');
+const { nodeProfilingIntegration } = require('@sentry/profiling-node');
+const { eventLoopBlockIntegration } = require('@sentry/node-native');
+const sentryDsn = process.env.SENTRY_DSN || process.env.EENGINE_SENTRY_DSN;
+if (sentryDsn) {
+    Sentry.init({
+        dsn: sentryDsn,
+        release: `${packageData.name}@${packageData.version}`,
+        environment: process.env.EENGINE_ENV || process.env.NODE_ENV || 'production',
+        tracesSampleRate: 1.0,
+        profileSessionSampleRate: 1.0,
+        profileLifecycle: 'trace',
+        integrations: [nodeProfilingIntegration(), eventLoopBlockIntegration({ threshold: 500 })]
+    });
+    Sentry.setTag('worker', 'imap');
+    Sentry.setContext('process', { pid: process.pid, worker: 'imap' });
+    process.on('beforeExit', () => {
+        Sentry.flush(2000).catch(() => {});
+    });
+}
 
 const { REDIS_PREFIX } = require('../lib/consts');
 
@@ -173,123 +193,128 @@ class ConnectionHandler {
     }
 
     async assignConnection(account, runIndex, initOpts) {
-        logger.info({ msg: 'Assigned account to worker', account });
+        return Sentry.startSpan(
+            { name: 'imap.assignConnection', op: 'imap.worker.assign', attributes: { account, runIndex } },
+            async () => {
+                logger.info({ msg: 'Assigned account to worker', account });
 
-        if (!this.runIndex) {
-            this.runIndex = runIndex;
-        }
-
-        if (!runIndex && this.runIndex) {
-            runIndex = this.runIndex;
-        }
-
-        let accountLogger = await this.getAccountLogger(account);
-        let secret = await getSecret();
-        let accountObject = new Account({
-            redis,
-            account,
-            secret,
-            esClient: await getESClient(logger)
-        });
-
-        this.accounts.set(account, accountObject);
-
-        const accountData = await accountObject.loadAccountData();
-
-        if (accountData.oauth2 && accountData.oauth2.auth) {
-            let oauth2App;
-
-            if (accountData?.oauth2?.auth?.delegatedUser && accountData?.oauth2?.auth?.delegatedAccount) {
-                let baseClient = new BaseClient(account, {
-                    runIndex,
-                    accountObject,
-                    redis,
-                    accountLogger,
-                    secret
-                });
-                let delegatedAccountData = await baseClient.getDelegatedAccount(accountData);
-                oauth2App = await oauth2Apps.get(delegatedAccountData.oauth2.provider);
-            } else {
-                oauth2App = await oauth2Apps.get(accountData.oauth2.provider);
-            }
-
-            if (oauth2App.baseScopes === 'api') {
-                // Use API instead of IMAP
-
-                switch (oauth2App.provider) {
-                    case 'gmail':
-                        accountObject.connection = new GmailClient(account, {
-                            runIndex,
-                            accountObject,
-                            redis,
-                            accountLogger,
-                            secret,
-
-                            notifyQueue,
-                            submitQueue,
-                            documentsQueue,
-                            flowProducer,
-
-                            call: msg => this.call(msg)
-                        });
-                        accountData.state = 'connecting';
-                        accountObject.logger = accountObject.connection.logger;
-                        break;
-
-                    case 'outlook':
-                        accountObject.connection = new OutlookClient(account, {
-                            runIndex,
-                            accountObject,
-                            redis,
-                            accountLogger,
-                            secret,
-
-                            notifyQueue,
-                            submitQueue,
-                            documentsQueue,
-                            flowProducer,
-
-                            call: msg => this.call(msg)
-                        });
-                        accountData.state = 'connecting';
-                        accountObject.logger = accountObject.connection.logger;
-                        break;
-
-                    default:
-                        throw new Error('Unsupported OAuth2 API');
+                if (!this.runIndex) {
+                    this.runIndex = runIndex;
                 }
+
+                if (!runIndex && this.runIndex) {
+                    runIndex = this.runIndex;
+                }
+
+                let accountLogger = await this.getAccountLogger(account);
+                let secret = await getSecret();
+                let accountObject = new Account({
+                    redis,
+                    account,
+                    secret,
+                    esClient: await getESClient(logger)
+                });
+
+                this.accounts.set(account, accountObject);
+
+                const accountData = await accountObject.loadAccountData();
+
+                if (accountData.oauth2 && accountData.oauth2.auth) {
+                    let oauth2App;
+
+                    if (accountData?.oauth2?.auth?.delegatedUser && accountData?.oauth2?.auth?.delegatedAccount) {
+                        let baseClient = new BaseClient(account, {
+                            runIndex,
+                            accountObject,
+                            redis,
+                            accountLogger,
+                            secret
+                        });
+                        let delegatedAccountData = await baseClient.getDelegatedAccount(accountData);
+                        oauth2App = await oauth2Apps.get(delegatedAccountData.oauth2.provider);
+                    } else {
+                        oauth2App = await oauth2Apps.get(accountData.oauth2.provider);
+                    }
+
+                    if (oauth2App.baseScopes === 'api') {
+                        // Use API instead of IMAP
+
+                        switch (oauth2App.provider) {
+                            case 'gmail':
+                                accountObject.connection = new GmailClient(account, {
+                                    runIndex,
+                                    accountObject,
+                                    redis,
+                                    accountLogger,
+                                    secret,
+
+                                    notifyQueue,
+                                    submitQueue,
+                                    documentsQueue,
+                                    flowProducer,
+
+                                    call: msg => this.call(msg)
+                                });
+                                accountData.state = 'connecting';
+                                accountObject.logger = accountObject.connection.logger;
+                                break;
+
+                            case 'outlook':
+                                accountObject.connection = new OutlookClient(account, {
+                                    runIndex,
+                                    accountObject,
+                                    redis,
+                                    accountLogger,
+                                    secret,
+
+                                    notifyQueue,
+                                    submitQueue,
+                                    documentsQueue,
+                                    flowProducer,
+
+                                    call: msg => this.call(msg)
+                                });
+                                accountData.state = 'connecting';
+                                accountObject.logger = accountObject.connection.logger;
+                                break;
+
+                            default:
+                                throw new Error('Unsupported OAuth2 API');
+                        }
+                    }
+                }
+
+                if (!accountObject.connection) {
+                    accountObject.connection = new IMAPClient(account, {
+                        runIndex,
+
+                        accountObject,
+                        redis,
+                        accountLogger,
+                        secret,
+
+                        notifyQueue,
+                        submitQueue,
+                        documentsQueue,
+                        flowProducer,
+
+                        call: msg => this.call(msg),
+                        logRaw: EENGINE_LOG_RAW
+                    });
+                    accountObject.logger = accountObject.connection.logger;
+                }
+
+                if (accountData.state) {
+                    await redis.hSetExists(accountObject.connection.getAccountKey(), 'state', accountData.state);
+                    await emitChangeEvent(this.logger, account, 'state', accountData.state);
+                }
+
+                // do not wait before returning as it may take forever
+                accountObject.connection.init(initOpts).catch(err => {
+                    logger.error({ account, err });
+                });
             }
-        }
-
-        if (!accountObject.connection) {
-            accountObject.connection = new IMAPClient(account, {
-                runIndex,
-
-                accountObject,
-                redis,
-                accountLogger,
-                secret,
-
-                notifyQueue,
-                submitQueue,
-                documentsQueue,
-                flowProducer,
-
-                call: msg => this.call(msg),
-                logRaw: EENGINE_LOG_RAW
-            });
-            accountObject.logger = accountObject.connection.logger;
-        }
-
-        if (accountData.state) {
-            await redis.hSetExists(accountObject.connection.getAccountKey(), 'state', accountData.state);
-            await emitChangeEvent(this.logger, account, 'state', accountData.state);
-        }
-
-        // do not wait before returning as it may take forever
-        accountObject.connection.init(initOpts).catch(err => {
-            logger.error({ account, err });
-        });
+        );
     }
 
     async deleteConnection(account) {
@@ -735,6 +760,16 @@ class ConnectionHandler {
             } catch (err) {
                 logger.error({ msg: 'Failed to send metrics', err });
             }
+            try {
+                Sentry.addBreadcrumb({
+                    category: 'imap.reconnect',
+                    message: 'Excessive reconnection rate detected',
+                    level: 'warning',
+                    data: { account, rate: `${metrics.attempts.length}/min`, totalWarnings: metrics.warnings }
+                });
+            } catch (err) {
+                // ignore
+            }
         }
 
         this.reconnectMetrics.set(account, metrics);
@@ -889,25 +924,28 @@ class ConnectionHandler {
     }
 
     async call(message) {
-        return new Promise((resolve, reject) => {
-            let mid = `${Date.now()}:${++this.mids}`;
+        const mid = `${Date.now()}:${++this.mids}`;
+        return Sentry.startSpan(
+            { name: 'imap.ipc.call', op: 'imap.worker.ipc', attributes: { mid, cmd: message?.cmd } },
+            () =>
+                new Promise((resolve, reject) => {
+                    let ttl = Math.max(message.timeout || 0, EENGINE_TIMEOUT || 0);
+                    let timer = setTimeout(() => {
+                        let err = new Error('Timeout waiting for command response [T3]');
+                        err.statusCode = 504;
+                        err.code = 'Timeout';
+                        err.ttl = ttl;
+                        reject(err);
+                    }, ttl);
 
-            let ttl = Math.max(message.timeout || 0, EENGINE_TIMEOUT || 0);
-            let timer = setTimeout(() => {
-                let err = new Error('Timeout waiting for command response [T3]');
-                err.statusCode = 504;
-                err.code = 'Timeout';
-                err.ttl = ttl;
-                reject(err);
-            }, ttl);
-
-            this.callQueue.set(mid, { resolve, reject, timer });
-            parentPort.postMessage({
-                cmd: 'call',
-                mid,
-                message
-            });
-        });
+                    this.callQueue.set(mid, { resolve, reject, timer });
+                    parentPort.postMessage({
+                        cmd: 'call',
+                        mid,
+                        message
+                    });
+                })
+        );
     }
 
     metrics(key, method, ...args) {
@@ -950,29 +988,36 @@ parentPort.on('message', message => {
     }
 
     if (message && message.cmd === 'call' && message.mid) {
-        return connectionHandler
-            .onCommand(message.message)
-            .then(response => {
-                parentPort.postMessage({
-                    cmd: 'resp',
-                    mid: message.mid,
-                    response
-                });
-            })
-            .catch(err => {
-                if (message.message && message.message.data && message.message.data.raw) {
-                    message.message.data.raw = message.message.data.raw.length;
-                }
-                logger.error(Object.assign({ msg: 'Command failed' }, message, { err }));
-                parentPort.postMessage({
-                    cmd: 'resp',
-                    mid: message.mid,
-                    error: err.message,
-                    code: err.code,
-                    statusCode: err.statusCode,
-                    info: err.info
-                });
-            });
+        const cmd = message.message && message.message.cmd;
+        const account = message.message && message.message.account;
+        return Sentry.startSpan(
+            { name: `imap.command ${cmd || 'unknown'}`, op: 'imap.worker.command', attributes: { mid: message.mid, cmd, account } },
+            () =>
+                connectionHandler
+                    .onCommand(message.message)
+                    .then(response => {
+                        parentPort.postMessage({
+                            cmd: 'resp',
+                            mid: message.mid,
+                            response
+                        });
+                    })
+                    .catch(err => {
+                        if (message.message && message.message.data && message.message.data.raw) {
+                            message.message.data.raw = message.message.data.raw.length;
+                        }
+                        Sentry.captureException(err);
+                        logger.error(Object.assign({ msg: 'Command failed' }, message, { err }));
+                        parentPort.postMessage({
+                            cmd: 'resp',
+                            mid: message.mid,
+                            error: err.message,
+                            code: err.code,
+                            statusCode: err.statusCode,
+                            info: err.info
+                        });
+                    })
+        );
     }
 
     connectionHandler.onMessage(message).catch(err => logger.error({ msg: 'Failed to process IPC message', err }));

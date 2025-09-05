@@ -43,6 +43,9 @@
     },
     "homepage": "https://emailengine.app/",
     "dependencies": {
+        "@sentry/node-native": "^8.30.0",
+        "@sentry/node": "^8.30.0",
+        "@sentry/profiling-node": "^8.30.0",
         "@bugsnag/js": "8.4.0",
         "@bull-board/api": "6.12.7",
         "@bull-board/hapi": "6.12.7",

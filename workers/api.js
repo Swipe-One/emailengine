@@ -7,6 +7,26 @@ const { parentPort } = require('worker_threads');
 const packageData = require('../package.json');
 const config = require('wild-config');
 const logger = require('../lib/logger');
+const Sentry = require('@sentry/node');
+const { nodeProfilingIntegration } = require('@sentry/profiling-node');
+const { eventLoopBlockIntegration } = require('@sentry/node-native');
+const sentryDsn = process.env.SENTRY_DSN || process.env.EENGINE_SENTRY_DSN;
+if (sentryDsn) {
+    Sentry.init({
+        dsn: sentryDsn,
+        release: `${packageData.name}@${packageData.version}`,
+        environment: process.env.EENGINE_ENV || process.env.NODE_ENV || 'production',
+        tracesSampleRate: 1.0,
+        profileSessionSampleRate: 1.0,
+        profileLifecycle: 'trace',
+        integrations: [nodeProfilingIntegration(), eventLoopBlockIntegration({ threshold: 500 })]
+    });
+    Sentry.setTag('worker', 'api');
+    Sentry.setContext('process', { pid: process.pid, worker: 'api' });
+    process.on('beforeExit', () => {
+        Sentry.flush(2000).catch(() => {});
+    });
+}
 const Path = require('path');
 const Gettext = require('@postalsys/gettext');
 const { loadTranslations, gt, joiLocales, locales } = require('../lib/translations');

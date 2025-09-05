@@ -5,6 +5,26 @@ const { parentPort } = require('worker_threads');
 const packageData = require('../package.json');
 const config = require('wild-config');
 const logger = require('../lib/logger');
+const Sentry = require('@sentry/node');
+const { nodeProfilingIntegration } = require('@sentry/profiling-node');
+const { eventLoopBlockIntegration } = require('@sentry/node-native');
+const sentryDsn = process.env.SENTRY_DSN || process.env.EENGINE_SENTRY_DSN;
+if (sentryDsn) {
+    Sentry.init({
+        dsn: sentryDsn,
+        release: `${packageData.name}@${packageData.version}`,
+        environment: process.env.EENGINE_ENV || process.env.NODE_ENV || 'production',
+        tracesSampleRate: 1.0,
+        profileSessionSampleRate: 1.0,
+        profileLifecycle: 'trace',
+        integrations: [nodeProfilingIntegration(), eventLoopBlockIntegration({ threshold: 500 })]
+    });
+    Sentry.setTag('worker', 'submit');
+    Sentry.setContext('process', { pid: process.pid, worker: 'submit' });
+    process.on('beforeExit', () => {
+        Sentry.flush(2000).catch(() => {});
+    });
+}
 
 const { REDIS_PREFIX } = require('../lib/consts');
 const { getDuration, readEnvValue, threadStats } = require('../lib/tools');
@@ -153,12 +173,32 @@ for (let level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal']) {
 const submitWorker = new Worker(
     'submit',
     async job => {
+        return await Sentry.startSpan(
+            {
+                name: 'submit job',
+                attributes: {
+                    queue: job.queue?.name,
+                    job_id: String(job.id),
+                    event: job.name,
+                    account: job.data?.account,
+                    attempts_made: job.attemptsMade,
+                    attempts: job.opts?.attempts
+                },
+                forceTransaction: true
+            },
+            async span => {
         if (!job.data.queueId && job.data.qId) {
             // this value was used to be called qId
             job.data.queueId = job.data.qId;
         }
 
-        let queueEntryBuf = await redis.hgetBuffer(`${REDIS_PREFIX}iaq:${job.data.account}`, job.data.queueId);
+        let queueEntryBuf = await Sentry.startSpan(
+            {
+                name: 'redis hgetBuffer iaq',
+                attributes: { key: `${REDIS_PREFIX}iaq:${job.data.account}` }
+            },
+            () => redis.hgetBuffer(`${REDIS_PREFIX}iaq:${job.data.account}`, job.data.queueId)
+        );
         if (!queueEntryBuf) {
             // nothing to do here
             try {
@@ -171,7 +211,10 @@ const submitWorker = new Worker(
 
         let queueEntry;
         try {
-            queueEntry = msgpack.decode(queueEntryBuf);
+            queueEntry = Sentry.startSpan(
+                { name: 'msgpack decode queued entry' },
+                () => msgpack.decode(queueEntryBuf)
+            );
         } catch (err) {
             logger.error({ msg: 'Failed to parse queued email entry', job: job.data, err });
             try {
@@ -220,7 +263,13 @@ const submitWorker = new Worker(
                 nextAttempt: new Date(nextAttempt).toISOString()
             };
 
-            let res = await accountObject.submitMessage(queueEntry);
+            let res = await Sentry.startSpan(
+                {
+                    name: 'Account.submitMessage',
+                    attributes: { account: job.data.account, queue_id: job.data.queueId }
+                },
+                async () => accountObject.submitMessage(queueEntry)
+            );
 
             logger.trace({
                 msg: 'Submitted queued message for delivery',
@@ -324,6 +373,8 @@ const submitWorker = new Worker(
 
             throw err;
         }
+            }
+        );
     },
     Object.assign(
         {
