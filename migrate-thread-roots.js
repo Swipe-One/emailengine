@@ -120,13 +120,16 @@ class ThreadRootMigrator {
         // Check if account already has thread roots
         const existingCount = await this.checkExistingData(connectedAccountId);
         if (existingCount > 0) {
-            console.log(`⚠️  Account ${connectedAccountId} already has ${existingCount} thread roots, skipping`);
-            return { success: false, reason: 'already_exists', existingCount };
+            console.log(`🔄 Account ${connectedAccountId} already has ${existingCount} thread roots, will add new ones`);
         }
 
         if (this.dryRun) {
-            console.log(`🔍 [DRY RUN] Would add ${firstMessageIds.length} thread roots for account ${connectedAccountId}`);
-            return { success: true, added: firstMessageIds.length, dryRun: true };
+            if (existingCount > 0) {
+                console.log(`🔍 [DRY RUN] Would update account ${connectedAccountId} (${existingCount} existing) with ${firstMessageIds.length} new thread roots`);
+            } else {
+                console.log(`🔍 [DRY RUN] Would add ${firstMessageIds.length} thread roots for account ${connectedAccountId}`);
+            }
+            return { success: true, added: firstMessageIds.length, dryRun: true, existingCount };
         }
 
         try {
@@ -155,8 +158,12 @@ class ThreadRootMigrator {
                 addedCount += result;
             }
             
-            console.log(`✅ Account ${connectedAccountId}: added ${addedCount} thread roots (${firstMessageIds.length} total)`);
-            return { success: true, added: addedCount, total: firstMessageIds.length };
+            if (existingCount > 0) {
+                console.log(`✅ Account ${connectedAccountId}: updated with ${addedCount} new thread roots (${existingCount} existing + ${addedCount} new)`);
+            } else {
+                console.log(`✅ Account ${connectedAccountId}: added ${addedCount} thread roots (${firstMessageIds.length} total)`);
+            }
+            return { success: true, added: addedCount, total: firstMessageIds.length, existingCount };
             
         } catch (err) {
             console.error(`❌ Failed to migrate account ${connectedAccountId}:`, err.message);
@@ -203,9 +210,7 @@ class ThreadRootMigrator {
                         this.stats.addedThreadRoots += result.added || 0;
                         this.stats.totalThreadRoots += result.total || result.added || 0;
                     } else {
-                        if (result.reason !== 'already_exists') {
-                            this.stats.errors++;
-                        }
+                        this.stats.errors++;
                     }
                     
                 } catch (err) {
@@ -317,7 +322,8 @@ class ThreadRootMigrator {
             accountResults: this.accountResults,
             resultsSummary: {
                 successful: this.accountResults.filter(r => r.success && r.reason === 'completed').length,
-                alreadyExists: this.accountResults.filter(r => r.reason === 'already_exists').length,
+                updated: this.accountResults.filter(r => r.success && r.existingCount > 0).length,
+                new: this.accountResults.filter(r => r.success && r.existingCount === 0).length,
                 invalidData: this.accountResults.filter(r => r.reason === 'invalid_data').length,
                 redisErrors: this.accountResults.filter(r => r.reason === 'redis_error').length,
                 unexpectedErrors: this.accountResults.filter(r => r.reason === 'unexpected_error').length
