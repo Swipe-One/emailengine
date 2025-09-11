@@ -9,6 +9,31 @@ const { REDIS_PREFIX } = require('../lib/consts');
 
 const { getDuration, getBoolean, emitChangeEvent, readEnvValue, hasEnvValue, threadStats } = require('../lib/tools');
 
+// Initialize Sentry for IMAP worker thread
+const Sentry = require('@sentry/node');
+const { nodeProfilingIntegration } = require('@sentry/profiling-node');
+const { eventLoopBlockIntegration } = require('@sentry/node-native');
+const sentryDsn = process.env.SENTRY_DSN || process.env.EENGINE_SENTRY_DSN;
+if (sentryDsn) {
+    Sentry.init({
+        dsn: sentryDsn,
+        release: `${packageData.name}@${packageData.version}`,
+        environment: process.env.EENGINE_ENV || process.env.NODE_ENV || 'production',
+        tracesSampleRate: 1.0,
+        profileSessionSampleRate: 1.0,
+        profileLifecycle: 'trace',
+        integrations: [nodeProfilingIntegration(), eventLoopBlockIntegration({ threshold: 500 })]
+    });
+    Sentry.setTag('worker', 'imap');
+    Sentry.setContext('process', { pid: process.pid, worker: 'imap' });
+    process.on('beforeExit', () => {
+        Sentry.flush(2000).catch(() => {});
+    });
+    
+    // Make Sentry available globally for BaseClient and other modules
+    global.Sentry = Sentry;
+}
+
 const Bugsnag = require('@bugsnag/js');
 if (readEnvValue('BUGSNAG_API_KEY')) {
     Bugsnag.start({
